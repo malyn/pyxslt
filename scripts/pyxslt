@@ -1,0 +1,180 @@
+#!/usr/bin/env python
+#
+# Copyright (c) 2006, Michael Alyn Miller <malyn@strangeGizmo.com>.
+# All rights reserved.
+# vi:ts=4:sw=4:et
+# 
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met:
+# 
+# 1.  Redistributions of source code must retain the above copyright
+#     notice unmodified, this list of conditions, and the following
+#     disclaimer.
+# 2.  Redistributions in binary form must reproduce the above copyright
+#     notice, this list of conditions and the following disclaimer in the
+#     documentation and/or other materials provided with the distribution.
+# 3.  Neither the name of Michael Alyn Miller nor the names of the
+#     contributors to this software may be used to endorse or promote
+#     products derived from this software without specific prior written
+#     permission.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS "AS IS" AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+# THE POSSIBILITY OF SUCH DAMAGE.
+
+"""
+Reads and executes Python code from stdin, transforming the resulting
+local variables into an XML document using an XSL template.
+"""
+
+# Python imports.
+import os
+import sys
+from types import *
+
+# pyxslt imports.
+import pyxslt
+import pyxslt.transform
+
+
+
+# ######################################################################
+# Main entry point.
+#
+
+if __name__ == '__main__':
+    # Create our option parser.
+    import optparse
+
+    parser = optparse.OptionParser(
+        usage='usage: %prog [options] [xslfile]',
+        version='%%prog %s' % (pyxslt.__version__))
+
+    parser.add_option(
+        '-p', '--pretty-print',
+        action='store_true',
+        help='pretty-print XML output')
+    parser.set_defaults(pretty_print=False)
+
+    parser.add_option(
+        '-r', '--root-tag',
+        metavar='NAME',
+        help='root tag name used during serialization (default: pyxslt)')
+    parser.set_defaults(root_tag='pyxslt')
+
+    parser.add_option(
+        '-w', '--write',
+        metavar='FILE',
+        help='write output to to FILE instead of stdout')
+    parser.set_defaults(write=None)
+
+    parser.add_option(
+        '-c', '--char-encoding',
+        metavar='CHARSET',
+        help='output character encoding (default: ASCII)')
+    parser.set_defaults(char_encoding='ASCII')
+
+    parser.add_option(
+        '-b', '--base-path',
+        metavar='DIR',
+        help='set base path for stylesheets (default: current directory)')
+    parser.set_defaults(base_path=None)
+
+    parser.add_option(
+        '-D', '--define',
+        action='append', dest='params',
+        metavar='NAME=VALUE',
+        help='define stylesheet parameter')
+    parser.set_defaults(params=[])
+
+
+    # Parse the arguments.
+    (options, args) = parser.parse_args()
+
+    # Decode the positional arguments.
+    try:
+        xslPath = args[0]
+    except:
+        xslPath = None
+
+
+    # Turn XSL parameters into a dictionary.
+    xslParams = {}
+    for p in options.params:
+        try:
+            name, value = p.split('=')
+            xslParams[name] = "'%s'" % (value)
+        except:
+            parser.error('invalid format for stylesheet parameter: %s' % (p))
+
+
+    # Change the first entry in sys.path (which currently contains the
+    # directory where this script is stored) to point to the current
+    # working directory.  This will allow the script that is about to be
+    # executed from stdin to find modules local to the cwd (which is
+    # probably what the user of pyxslt has in mind) rather than local to
+    # the pyxslt file (which is of no interest to anyone).
+    sys.path[0] = os.getcwd()
+
+    # Execute the Python code on stdin, collecting the results into our
+    # globals and locals dictionaries.
+    execGlobals = {}
+    execLocals = {}
+    exec sys.stdin in execGlobals, execLocals
+
+    # Create a dictionary of the local properties that do not begin with
+    # an underscore and are not classes, functions, modules, or types.
+    # Everything else will be serialized and transformed.  Note that the
+    # exclusion list is not exhaustive; its primary purpose is to
+    # prevent obvious things like modules and functions from making it
+    # to the serializer.
+    execProps = dict(
+        [(k, v) for k, v in execLocals.items()
+            if  not k.startswith('_')
+            and not type(v) in (
+                ClassType,
+                FunctionType,
+                ModuleType,
+                TypeType,
+            )
+        ])
+
+    # Serialize if we were not given an XSL path, otherwise serialize
+    # and transform.
+    if not xslPath:
+        # Serialize the properties.
+        xml = pyxslt.serialize.toString(
+            rootTagName=options.root_tag,
+            encoding=options.char_encoding,
+            prettyPrintXml=options.pretty_print,
+            **execProps)
+    else:
+        # Transform the properties.
+        xml = pyxslt.transform.toString(
+            xslPath,
+            xslParams=xslParams,
+            xslBasePath=options.base_path,
+            rootTagName=options.root_tag,
+            encoding=options.char_encoding,
+            prettyPrintXml=options.pretty_print,
+            **execProps)
+
+
+    # Write out the serialized document.
+    if options.write:
+        out = open(options.write, 'w')
+        try:
+            out.write(xml)
+        finally:
+            out.close()
+    else:
+        sys.stdout.write(xml)
